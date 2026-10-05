@@ -146,6 +146,28 @@ class AnimaBaseDataLoader(
             train_progress: TrainProgress,
             is_validation: bool = False,
     ):
+        # ANIMA_ASPECT_CAP (resolution-aware): Anima/Cosmos positional embeddings (RoPE)
+        # support at most 128 patches per latent axis. One patch spans 2 latent px = 16
+        # image px, so the HARD limit is a long side of 128 * 16 = 2048 px; beyond that,
+        # training crashes in transformer_cosmos.py ("Expected size N but got size 128").
+        # Aspect bucketing sets a bucket's long side to base_resolution * sqrt(aspect),
+        # so the largest safe aspect is (2048 / base_resolution) ** 2. For multi-resolution
+        # training the LARGEST configured resolution is the binding constraint. We cap the
+        # aspect-bucket list dynamically instead of hardcoding one ratio, so the fix stays
+        # correct at any resolution (e.g. at 1536 even 2:1 would otherwise crash). Lower
+        # _ANIMA_MAX_LONG_PX to 1920 to stay strictly within the model's trained RoPE range.
+        import re as _re
+        from mgds.pipelineModules.AspectBucketing import AspectBucketing
+        _res_vals = [int(x) for x in _re.split(r'\D', str(config.resolution)) if x.strip() != '']
+        _max_res = max(_res_vals) if _res_vals else 512
+        _ANIMA_MAX_LONG_PX = 2048
+        _max_aspect = (_ANIMA_MAX_LONG_PX / _max_res) ** 2
+        AspectBucketing.all_possible_input_aspects = [
+            (h, w) for (h, w) in [
+                (1.0, 1.0), (1.0, 1.25), (1.0, 1.5), (1.0, 1.75), (1.0, 2.0),
+                (1.0, 2.5), (1.0, 3.0), (1.0, 3.5), (1.0, 4.0),
+            ] if (max(h, w) / min(h, w)) <= _max_aspect
+        ] or [(1.0, 1.0)]
         return DataLoaderText2ImageMixin._create_dataset(self,
             config, model, model_setup, train_progress, is_validation,
             aspect_bucketing_quantization=64,
